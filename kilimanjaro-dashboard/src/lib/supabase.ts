@@ -1,6 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type { HealthMetric, Workout } from './data';
-import { getCutoffDate } from './data';
+import { getCutoffDate } from './date-utils';
 
 // Supabase client — lazily initialized
 let supabase: SupabaseClient | null = null;

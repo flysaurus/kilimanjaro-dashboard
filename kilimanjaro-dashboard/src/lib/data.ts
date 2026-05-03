@@ -1,5 +1,12 @@
 import { NextResponse } from 'next/server';
-import { addMetricToSupabase, addWorkoutToSupabase, getMetricsFromSupabase, getWorkoutsFromSupabase, getStatsFromSupabase } from './supabase';
+import {
+  addMetricToSupabase,
+  addWorkoutToSupabase,
+  getMetricsFromSupabase,
+  getWorkoutsFromSupabase,
+  getStatsFromSupabase,
+} from './supabase';
+import { getCutoffDate } from './date-utils';
 
 export type HealthMetric = {
   id: string;
@@ -30,38 +37,14 @@ function hasSupabase(): boolean {
   return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
 }
 
-// Load data from static JSON (baked at build time)
-function loadStaticData(): { metrics: HealthMetric[]; workouts: Workout[] } {
-  try {
-    const fs = require('fs');
-    const path = require('path');
-    const filePath = path.join(process.cwd(), 'src/lib/data.json');
-    if (fs.existsSync(filePath)) {
-      const raw = fs.readFileSync(filePath, 'utf8');
-      return JSON.parse(raw);
-    }
-  } catch (e) {
-    console.error('Failed to load data.json:', e);
-  }
-  return { metrics: [], workouts: [] };
-}
+// Import static JSON at build time (works on Vercel)
+// @ts-expect-error Next.js handles JSON imports
+import staticJson from './data.json';
 
-const staticData = loadStaticData();
-
-// Consistent cutoff using EST (UTC-5) for all date filtering
-export function getCutoffDate(days: number): Date {
-  const now = new Date();
-  // Midnight EST = 05:00 UTC
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 5, 0, 0, 0));
-  if (now.getUTCHours() < 5) {
-    // Still "yesterday" in EST
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
-  if (days === 1) return d;
-  // Go back (days - 1) days
-  d.setUTCDate(d.getUTCDate() - (days - 1));
-  return d;
-}
+const staticData = (staticJson || { metrics: [], workouts: [] }) as {
+  metrics: HealthMetric[];
+  workouts: Workout[];
+};
 
 // In-memory storage with Supabase persistence
 class DataStore {
@@ -80,7 +63,6 @@ class DataStore {
     if (this.metrics.length > this.maxItems) {
       this.metrics = this.metrics.slice(-this.maxItems);
     }
-    // Persist to Supabase in background (non-blocking)
     if (this.useSupabase) {
       addMetricToSupabase(metric).catch(() => {});
     }
@@ -97,7 +79,6 @@ class DataStore {
     if (this.workouts.length > this.maxItems / 2) {
       this.workouts = this.workouts.slice(-Math.floor(this.maxItems / 2));
     }
-    // Persist to Supabase in background (non-blocking)
     if (this.useSupabase) {
       addWorkoutToSupabase(workout).catch(() => {});
     }
