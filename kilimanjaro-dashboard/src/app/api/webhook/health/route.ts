@@ -180,8 +180,14 @@ function storeHaeWorkout(item: Record<string, unknown>): boolean {
 }
 
 function detectAndStoreSingle(item: Record<string, unknown>): { type: string; skipped?: boolean; error?: string } {
-  // --- Webhook processing for flat records ---
-  if (item.workoutType || item.type === 'Workout' || (item.duration !== undefined && item.distance !== undefined)) {
+  // Detect flat workout records more aggressively
+  const isWorkout = 
+    item.workoutType || 
+    item.type === 'Workout' || 
+    (item.duration !== undefined && (item.distance !== undefined || item.activeEnergyBurned !== undefined || item.calories !== undefined)) ||
+    (item.startDate !== undefined && item.endDate !== undefined && (item.activeEnergyBurned !== undefined || item.averageHeartRate !== undefined));
+  
+  if (isWorkout) {
     const ok = storeHaeWorkout(item);
     return ok ? { type: 'workout' } : { type: 'workout', skipped: true };
   }
