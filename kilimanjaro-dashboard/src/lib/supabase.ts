@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type { HealthMetric, Workout } from './data';
+import { getCutoffDate } from './data';
 
 // Supabase client — lazily initialized
 let supabase: SupabaseClient | null = null;
@@ -60,19 +61,6 @@ export async function addWorkoutToSupabase(workout: Omit<Workout, 'id' | 'create
   } catch {
     return false;
   }
-}
-
-// Consistent cutoff: for days=1 we use last 24h to avoid timezone issues
-// For days>1 we go back N days from now in UTC
-function getCutoffDate(days: number): Date {
-  const cutoff = new Date();
-  if (days === 1) {
-    cutoff.setUTCHours(cutoff.getUTCHours() - 24);
-  } else {
-    cutoff.setUTCDate(cutoff.getUTCDate() - days);
-    cutoff.setUTCHours(0, 0, 0, 0);
-  }
-  return cutoff;
 }
 
 export async function getMetricsFromSupabase(type?: string, days = 90): Promise<HealthMetric[]> {

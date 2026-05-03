@@ -48,17 +48,19 @@ function loadStaticData(): { metrics: HealthMetric[]; workouts: Workout[] } {
 
 const staticData = loadStaticData();
 
-// Consistent cutoff: for days=1 we use last 24h to avoid timezone issues
-// For days>1 we go back N days from now in UTC
-function getCutoffDate(days: number): Date {
-  const cutoff = new Date();
-  if (days === 1) {
-    cutoff.setUTCHours(cutoff.getUTCHours() - 24);
-  } else {
-    cutoff.setUTCDate(cutoff.getUTCDate() - days);
-    cutoff.setUTCHours(0, 0, 0, 0);
+// Consistent cutoff using EST (UTC-5) for all date filtering
+export function getCutoffDate(days: number): Date {
+  const now = new Date();
+  // Midnight EST = 05:00 UTC
+  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 5, 0, 0, 0));
+  if (now.getUTCHours() < 5) {
+    // Still "yesterday" in EST
+    d.setUTCDate(d.getUTCDate() - 1);
   }
-  return cutoff;
+  if (days === 1) return d;
+  // Go back (days - 1) days
+  d.setUTCDate(d.getUTCDate() - (days - 1));
+  return d;
 }
 
 // In-memory storage with Supabase persistence
