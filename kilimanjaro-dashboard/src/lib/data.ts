@@ -48,6 +48,19 @@ function loadStaticData(): { metrics: HealthMetric[]; workouts: Workout[] } {
 
 const staticData = loadStaticData();
 
+// Consistent cutoff: for days=1 we use last 24h to avoid timezone issues
+// For days>1 we go back N days from now in UTC
+function getCutoffDate(days: number): Date {
+  const cutoff = new Date();
+  if (days === 1) {
+    cutoff.setUTCHours(cutoff.getUTCHours() - 24);
+  } else {
+    cutoff.setUTCDate(cutoff.getUTCDate() - days);
+    cutoff.setUTCHours(0, 0, 0, 0);
+  }
+  return cutoff;
+}
+
 // In-memory storage with Supabase persistence
 class DataStore {
   private metrics: HealthMetric[] = [...staticData.metrics];
@@ -90,15 +103,10 @@ class DataStore {
   }
 
   async getMetrics(type?: string, days = 90): Promise<HealthMetric[]> {
+    const cutoff = getCutoffDate(days);
     if (this.useSupabase) {
       const remote = await getMetricsFromSupabase(type, days);
       if (remote.length > 0) return remote;
-    }
-    const cutoff = new Date();
-    if (days === 1) {
-      cutoff.setHours(0, 0, 0, 0); // Start of today
-    } else {
-      cutoff.setDate(cutoff.getDate() - days);
     }
     let filtered = this.metrics.filter(m => new Date(m.date) >= cutoff);
     if (type) {
@@ -108,15 +116,10 @@ class DataStore {
   }
 
   async getWorkouts(days = 90): Promise<Workout[]> {
+    const cutoff = getCutoffDate(days);
     if (this.useSupabase) {
       const remote = await getWorkoutsFromSupabase(days);
       if (remote.length > 0) return remote;
-    }
-    const cutoff = new Date();
-    if (days === 1) {
-      cutoff.setHours(0, 0, 0, 0); // Start of today
-    } else {
-      cutoff.setDate(cutoff.getDate() - days);
     }
     return this.workouts
       .filter(w => new Date(w.date) >= cutoff)

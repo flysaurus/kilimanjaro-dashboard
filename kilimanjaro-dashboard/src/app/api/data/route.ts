@@ -10,16 +10,24 @@ export async function GET(request: Request) {
   const workouts = await dataStore.getWorkouts(days);
   const stats = await dataStore.getStats(days);
 
-  return NextResponse.json({
-    metrics,
-    workouts,
-    stats,
-    summary: {
-      metricCount: metrics.length,
-      workoutCount: workouts.length,
-      dateRange: days,
+  return NextResponse.json(
+    {
+      metrics,
+      workouts,
+      stats,
+      summary: {
+        metricCount: metrics.length,
+        workoutCount: workouts.length,
+        dateRange: days,
+      },
     },
-  });
+    {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+        'X-Days-Filter': String(days),
+      },
+    }
+  );
 }
 
 export async function DELETE() {

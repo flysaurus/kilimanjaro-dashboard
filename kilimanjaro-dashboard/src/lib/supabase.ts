@@ -17,7 +17,6 @@ export async function initSupabaseTables(): Promise<boolean> {
   const client = getSupabase();
   if (!client) return false;
   try {
-    // Create tables if they don't exist
     const { error } = await client.rpc('create_health_tables');
     return !error;
   } catch {
@@ -63,12 +62,24 @@ export async function addWorkoutToSupabase(workout: Omit<Workout, 'id' | 'create
   }
 }
 
+// Consistent cutoff: for days=1 we use last 24h to avoid timezone issues
+// For days>1 we go back N days from now in UTC
+function getCutoffDate(days: number): Date {
+  const cutoff = new Date();
+  if (days === 1) {
+    cutoff.setUTCHours(cutoff.getUTCHours() - 24);
+  } else {
+    cutoff.setUTCDate(cutoff.getUTCDate() - days);
+    cutoff.setUTCHours(0, 0, 0, 0);
+  }
+  return cutoff;
+}
+
 export async function getMetricsFromSupabase(type?: string, days = 90): Promise<HealthMetric[]> {
   const client = getSupabase();
   if (!client) return [];
   try {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
+    const cutoff = getCutoffDate(days);
     let query = client
       .from('metrics')
       .select('*')
@@ -97,8 +108,7 @@ export async function getWorkoutsFromSupabase(days = 90): Promise<Workout[]> {
   const client = getSupabase();
   if (!client) return [];
   try {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
+    const cutoff = getCutoffDate(days);
     const { data, error } = await client
       .from('workouts')
       .select('*')
@@ -147,7 +157,6 @@ export async function clearSupabaseData(): Promise<boolean> {
   const client = getSupabase();
   if (!client) return false;
   try {
-    // Disable RLS temporarily or use service role key
     await client.rpc('truncate_health_tables');
     return true;
   } catch {
