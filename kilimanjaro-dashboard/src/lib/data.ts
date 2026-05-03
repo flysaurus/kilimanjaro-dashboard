@@ -38,7 +38,6 @@ function hasSupabase(): boolean {
 }
 
 // Import static JSON at build time (works on Vercel)
-// @ts-expect-error Next.js handles JSON imports
 import staticJson from './data.json';
 
 const staticData = (staticJson || { metrics: [], workouts: [] }) as {
