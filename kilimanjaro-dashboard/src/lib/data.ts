@@ -32,18 +32,36 @@ export type Workout = {
   createdAt: string;
 };
 
-// Check if Supabase is configured
-function hasSupabase(): boolean {
-  return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
-}
-
-// Import static JSON at build time (works on Vercel)
+// Import static JSON at build time (historical data)
 import staticJson from './data.json';
 
 const staticData = (staticJson || { metrics: [], workouts: [] }) as {
   metrics: HealthMetric[];
   workouts: Workout[];
 };
+
+function hasSupabase(): boolean {
+  return !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
+}
+
+function dedupeItems<T extends { date: string } & Record<string, unknown>>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter(item => {
+    const key = `${item.date}-${JSON.stringify(item).slice(0, 200)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeData<T extends { date: string } & Record<string, unknown>>(
+  remote: T[],
+  local: T[]
+): T[] {
+  const cutoff = getCutoffDate(90); // keep last 90 days
+  const all = [...remote, ...local].filter(item => new Date(item.date) >= cutoff);
+  return dedupeItems(all).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
 
 // In-memory storage with Supabase persistence
 class DataStore {
@@ -86,24 +104,25 @@ class DataStore {
 
   async getMetrics(type?: string, days = 90): Promise<HealthMetric[]> {
     const cutoff = getCutoffDate(days);
+    let remote: HealthMetric[] = [];
     if (this.useSupabase) {
-      const remote = await getMetricsFromSupabase(type, days);
-      if (remote.length > 0) return remote;
+      remote = await getMetricsFromSupabase(type, days);
     }
-    let filtered = this.metrics.filter(m => new Date(m.date) >= cutoff);
-    if (type) {
-      filtered = filtered.filter(m => m.metricType === type);
-    }
-    return filtered.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    // Merge remote + local static data, dedupe
+    const all = mergeData(remote, this.metrics).filter(m => new Date(m.date) >= cutoff);
+
+    if (type) return all.filter(m => m.metricType === type);
+    return all;
   }
 
   async getWorkouts(days = 90): Promise<Workout[]> {
     const cutoff = getCutoffDate(days);
+    let remote: Workout[] = [];
     if (this.useSupabase) {
-      const remote = await getWorkoutsFromSupabase(days);
-      if (remote.length > 0) return remote;
+      remote = await getWorkoutsFromSupabase(days);
     }
-    return this.workouts
+    return mergeData(remote, this.workouts)
       .filter(w => new Date(w.date) >= cutoff)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }
@@ -131,10 +150,7 @@ class DataStore {
   }
 
   async getStats(days = 30) {
-    if (this.useSupabase) {
-      const remote = await getStatsFromSupabase(days);
-      if (remote.totalWorkouts > 0 || remote.avgSteps > 0) return remote;
-    }
+    // Compute stats from merged data
     const metrics = await this.getMetrics(undefined, days);
     const workouts = await this.getWorkouts(days);
 
