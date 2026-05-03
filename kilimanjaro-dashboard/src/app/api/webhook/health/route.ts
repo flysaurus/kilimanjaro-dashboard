@@ -1,80 +1,124 @@
 import { NextResponse } from 'next/server';
 import { dataStore } from '@/lib/data';
 import type { HealthMetric, Workout } from '@/lib/data';
+import { addMetricToSupabase, addWorkoutToSupabase } from '@/lib/supabase';
 
-// Health Auto Export sends JSON in multiple formats:
-// 1. { data: { metrics: [...], workouts: [...] } } — Health Auto Export app
-// 2. Array of flat records
-// 3. Single flat record
+// Health Auto Export REST API sends health data via HTTP POST.
+// Supported formats:
+//   1. { data: { metrics: [...], workouts: [...] } } — structured Health Auto Export
+//   2. Array of flat metric/workout records
+//   3. Single flat record
 
-function detectAndStore(body: unknown): { stored: number; type: string } {
-  if (!body || typeof body !== 'object') {
-    return { stored: 0, type: 'unknown' };
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+function verifyAuth(request: Request): boolean {
+  const expected = process.env.WEBHOOK_TOKEN;
+  if (!expected) return true; // no token set → open
+  const authHeader = request.headers.get('authorization') || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return !!(match && match[1] === expected);
+}
+
+// ---------------------------------------------------------------------------
+// Deduplication helpers
+// ---------------------------------------------------------------------------
+let recentIds = new Set<string>();
+const recentMax = 2000;
+
+function makeDedupKey(itemType: string, date: string, subKey: string): string {
+  // group by minute for dedup tolerance
+  const d = new Date(date);
+  d.setSeconds(0, 0);
+  return `${itemType}::${d.toISOString()}::${subKey}`;
+}
+
+function isDuplicate(key: string): boolean {
+  if (recentIds.has(key)) return true;
+  recentIds.add(key);
+  if (recentIds.size > recentMax) {
+    // prune oldest half
+    const arr = Array.from(recentIds);
+    recentIds = new Set(arr.slice(Math.floor(recentMax / 2)));
   }
+  return false;
+}
 
-  let stored = 0;
-  let type = 'unknown';
+// ---------------------------------------------------------------------------
+// Process incoming payload
+// ---------------------------------------------------------------------------
+interface ProcessResult {
+  metrics: number;
+  workouts: number;
+  skipped: number;
+  errors: string[];
+}
+
+export function detectAndStore(body: unknown): ProcessResult {
+  const result: ProcessResult = { metrics: 0, workouts: 0, skipped: 0, errors: [] };
+
+  if (!body || typeof body !== 'object') {
+    result.errors.push('Body is not an object');
+    return result;
+  }
 
   const obj = body as Record<string, unknown>;
 
-  // Handle Health Auto Export format: { data: { metrics, workouts } }
+  // --- Format 1: structured HAE wrapper ---
   if (obj.data && typeof obj.data === 'object') {
     const data = obj.data as Record<string, unknown>;
 
     if (Array.isArray(data.metrics)) {
-      for (const metricGroup of data.metrics) {
-        const result = storeHaeMetricGroup(metricGroup as Record<string, unknown>);
-        if (result) {
-          stored += result.count;
-          type = result.type;
-        }
+      for (const group of data.metrics) {
+        const r = storeHaeMetricGroup(group as Record<string, unknown>);
+        result.metrics += r.stored;
+        result.skipped += r.skipped;
       }
     }
 
     if (Array.isArray(data.workouts)) {
-      for (const workout of data.workouts) {
-        const result = storeHaeWorkout(workout as Record<string, unknown>);
-        if (result) {
-          stored++;
-          type = 'workout';
-        }
+      for (const w of data.workouts) {
+        const ok = storeHaeWorkout(w as Record<string, unknown>);
+        if (ok) result.workouts++;
       }
     }
-
-    return { stored, type };
+    return result;
   }
 
-  // Handle array of records (flat format)
+  // --- Format 2: array of flat records ---
   if (Array.isArray(body)) {
     for (const item of body) {
-      const result = detectAndStoreSingle(item);
-      if (result) {
-        stored++;
-        type = result;
-      }
+      const r = detectAndStoreSingle(item);
+      if (r.type === 'metric') result.metrics++;
+      if (r.type === 'workout') result.workouts++;
+      if (r.skipped) result.skipped++;
+      if (r.error) result.errors.push(r.error);
     }
-    return { stored, type };
+    return result;
   }
 
-  // Handle direct object (flat format)
-  const result = detectAndStoreSingle(obj);
-  if (result) {
-    stored = 1;
-    type = result;
-  }
-
-  return { stored, type };
+  // --- Format 3: single flat record ---
+  const r = detectAndStoreSingle(obj);
+  if (r.type === 'metric') result.metrics++;
+  if (r.type === 'workout') result.workouts++;
+  if (r.skipped) result.skipped++;
+  if (r.error) result.errors.push(r.error);
+  return result;
 }
 
-// Store a Health Auto Export metric group: { name, units, data: [...] }
-function storeHaeMetricGroup(group: Record<string, unknown>): { count: number; type: string } | null {
+// ---------------------------------------------------------------------------
+// Health Auto Export metric group → { name, units, data: [...] }
+// ---------------------------------------------------------------------------
+function storeHaeMetricGroup(group: Record<string, unknown>): { stored: number; skipped: number } {
+  let stored = 0;
+  let skipped = 0;
+
   const metricType = mapHaeMetricName(String(group.name || ''));
-  if (!metricType) return null;
+  if (!metricType) return { stored, skipped };
 
   const dataArray = group.data;
-  if (!Array.isArray(dataArray)) return null;
+  if (!Array.isArray(dataArray)) return { stored, skipped };
 
-  let count = 0;
   const unit = String(group.units || 'count');
 
   for (const point of dataArray) {
@@ -89,25 +133,39 @@ function storeHaeMetricGroup(group: Record<string, unknown>): { count: number; t
     }
     if (value === undefined) continue;
 
+    const date = parseDate(pt.date) || new Date().toISOString();
+    const source = String(pt.source || 'Health Auto Export').split('|')[0].trim();
+
+    const dedupKey = makeDedupKey(metricType, date, source);
+    if (isDuplicate(dedupKey)) {
+      skipped++;
+      continue;
+    }
+
     const metric: Omit<HealthMetric, 'id' | 'createdAt'> = {
-      date: parseDate(pt.date) || new Date().toISOString(),
+      date,
       metricType,
       value,
       unit,
-      source: String(pt.source || 'Health Auto Export').split('|')[0].trim(),
+      source,
     };
     dataStore.addMetric(metric);
-    count++;
+    addMetricToSupabase(metric).catch(() => {}); // background persist
+    stored++;
   }
 
-  return { count, type: metricType };
+  return { stored, skipped };
 }
 
-// Store a Health Auto Export workout
 function storeHaeWorkout(item: Record<string, unknown>): boolean {
+  const date = parseDate(item.startDate || item.date || item.creationDate) || new Date().toISOString();
+  const workoutType = String(item.workoutType || item.name || item.type || 'Unknown');
+  const dedupKey = makeDedupKey('workout', date, workoutType);
+  if (isDuplicate(dedupKey)) return false;
+
   const workout: Omit<Workout, 'id' | 'createdAt'> = {
-    date: parseDate(item.startDate || item.date || item.creationDate) || new Date().toISOString(),
-    workoutType: String(item.workoutType || item.name || item.type || 'Unknown'),
+    date,
+    workoutType,
     duration: parseDuration(item.duration),
     distance: parseFloatAny(item.distance),
     elevationGain: parseFloatAny(item.elevationAscended || item.totalElevationGain),
@@ -117,10 +175,44 @@ function storeHaeWorkout(item: Record<string, unknown>): boolean {
     notes: item.notes ? String(item.notes) : undefined,
   };
   dataStore.addWorkout(workout);
+  addWorkoutToSupabase(workout).catch(() => {}); // background persist
   return true;
 }
 
-// Map Health Auto Export metric names to our internal types
+function detectAndStoreSingle(item: Record<string, unknown>): { type: string; skipped?: boolean; error?: string } {
+  // --- Webhook processing for flat records ---
+  if (item.workoutType || item.type === 'Workout' || (item.duration !== undefined && item.distance !== undefined)) {
+    const ok = storeHaeWorkout(item);
+    return ok ? { type: 'workout' } : { type: 'workout', skipped: true };
+  }
+
+  const metricType = detectMetricType(item);
+  if (metricType) {
+    const date = parseDate(item.startDate || item.date || item.creationDate || item.endDate) || new Date().toISOString();
+    const source = String(item.sourceName || item.source || 'Health Auto Export');
+    const dedupKey = makeDedupKey(metricType, date, source);
+    if (isDuplicate(dedupKey)) {
+      return { type: 'metric', skipped: true };
+    }
+
+    const metric: Omit<HealthMetric, 'id' | 'createdAt'> = {
+      date,
+      metricType,
+      value: parseFloatAny(item.quantity || item.value || item.count || item.avg) || 0,
+      unit: String(item.unit || 'count'),
+      source,
+    };
+    dataStore.addMetric(metric);
+    addMetricToSupabase(metric).catch(() => {}); // background persist
+    return { type: 'metric' };
+  }
+
+  return { type: 'unknown', error: `Could not identify metric type: ${JSON.stringify(item).slice(0, 200)}` };
+}
+
+// ---------------------------------------------------------------------------
+// Mappings / Parsers
+// ---------------------------------------------------------------------------
 function mapHaeMetricName(name: string): HealthMetric['metricType'] | null {
   const n = name.toLowerCase();
   if (n.includes('step')) return 'steps';
@@ -131,48 +223,12 @@ function mapHaeMetricName(name: string): HealthMetric['metricType'] | null {
   if (n.includes('sleep')) return 'sleep';
   if (n.includes('weight') || n.includes('mass')) return 'weight';
   if (n.includes('elevation') || n.includes('flights')) return 'elevation';
-  // Skip types we don't track
-  return null;
-}
-
-function detectAndStoreSingle(item: Record<string, unknown>): string | null {
-  // Check for workout indicators
-  if (item.workoutType || item.type === 'Workout' || (item.duration !== undefined && item.distance !== undefined)) {
-    const workout: Omit<Workout, 'id' | 'createdAt'> = {
-      date: parseDate(item.startDate || item.date || item.creationDate) || new Date().toISOString(),
-      workoutType: String(item.workoutType || item.name || item.type || 'Unknown'),
-      duration: parseDuration(item.duration),
-      distance: parseFloatAny(item.distance),
-      elevationGain: parseFloatAny(item.elevationAscended || item.totalElevationGain),
-      activeEnergy: parseFloatAny(item.activeEnergyBurned || item.activeEnergy || item.calories),
-      avgHeartRate: parseFloatAny(item.averageHeartRate || item.heartRate),
-      maxHeartRate: parseFloatAny(item.maximumHeartRate || item.maxHeartRate),
-      notes: item.notes ? String(item.notes) : undefined,
-    };
-    dataStore.addWorkout(workout);
-    return 'workout';
-  }
-
-  // Check for health metric indicators
-  const metricType = detectMetricType(item);
-  if (metricType) {
-    const metric: Omit<HealthMetric, 'id' | 'createdAt'> = {
-      date: parseDate(item.startDate || item.date || item.creationDate || item.endDate) || new Date().toISOString(),
-      metricType,
-      value: parseFloatAny(item.quantity || item.value || item.count || item.avg) || 0,
-      unit: String(item.unit || 'count'),
-      source: String(item.sourceName || item.source || 'Health Auto Export'),
-    };
-    dataStore.addMetric(metric);
-    return 'metric';
-  }
-
   return null;
 }
 
 function detectMetricType(item: Record<string, unknown>): HealthMetric['metricType'] | null {
   const typeField = String(item.type || item.dataType || item.metricType || item.name || '').toLowerCase();
-  
+
   if (typeField.includes('step')) return 'steps';
   if (typeField.includes('distance') && !typeField.includes('elevation')) return 'distance';
   if (typeField.includes('activeenergy') || typeField.includes('calorie')) return 'activeEnergy';
@@ -181,8 +237,7 @@ function detectMetricType(item: Record<string, unknown>): HealthMetric['metricTy
   if (typeField.includes('sleep')) return 'sleep';
   if (typeField.includes('weight') || typeField.includes('mass')) return 'weight';
   if (typeField.includes('elevation') || typeField.includes('flights')) return 'elevation';
-  
-  // Try to infer from unit
+
   const unit = String(item.unit || '').toLowerCase();
   if (unit.includes('step')) return 'steps';
   if (unit.includes('km') || unit.includes('mile')) return 'distance';
@@ -203,7 +258,6 @@ function parseDate(val: unknown): string | null {
 
 function parseDuration(val: unknown): number {
   if (typeof val === 'number') {
-    // Could be seconds or minutes — if > 100 assume seconds
     return val > 100 ? Math.round(val / 60) : val;
   }
   if (typeof val === 'string') {
@@ -219,36 +273,56 @@ function parseFloatAny(val: unknown): number | undefined {
   return isNaN(num) ? undefined : num;
 }
 
+// ---------------------------------------------------------------------------
+// HTTP handlers
+// ---------------------------------------------------------------------------
 export async function POST(request: Request) {
-  // Bearer token auth
-  const authHeader = request.headers.get('authorization') || '';
-  const expected = process.env.WEBHOOK_TOKEN;
-  if (expected) {
-    const match = authHeader.match(/^Bearer (.+)$/);
-    if (!match || match[1] !== expected) {
-      return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-    }
+  if (!verifyAuth(request)) {
+    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   }
+
+  const contentType = request.headers.get('content-type') || '';
+  let body: unknown;
 
   try {
-    const body = await request.json();
-    const result = detectAndStore(body);
-
-    return NextResponse.json({
-      success: true,
-      stored: result.stored,
-      type: result.type,
-    });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Invalid JSON payload' },
-      { status: 400 }
-    );
+    if (contentType.includes('multipart/form-data') && contentType.includes('boundary=')) {
+      // Health Auto Export sends CSV as multipart/form-data.
+      // We won't support CSV in this route; reject gracefully.
+      return NextResponse.json(
+        { success: false, error: 'CSV multipart not supported. Set Export Format to JSON in Health Auto Export.' },
+        { status: 415 }
+      );
+    }
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ success: false, error: 'Invalid JSON body' }, { status: 400 });
   }
+
+  // Health Auto Export v2 can send batched requests. Each batch is a
+  // standalone POST but the payload shape is the same.
+  const result = detectAndStore(body);
+
+  console.log('Webhook received:', {
+    metrics: result.metrics,
+    workouts: result.workouts,
+    skipped: result.skipped,
+    errors: result.errors.length,
+  });
+
+  // 207 Multi-Status if we had partial failures; 200 on success
+  const hasErrors = result.errors.length > 0;
+  return NextResponse.json(
+    {
+      success: !hasErrors,
+      stored: { metrics: result.metrics, workouts: result.workouts },
+      skipped: result.skipped,
+      errors: result.errors.length > 0 ? result.errors : undefined,
+    },
+    { status: hasErrors ? 207 : 200 }
+  );
 }
 
-// GET for debugging
+// GET for quick debugging
 export async function GET() {
   const data = dataStore.getAllData();
   return NextResponse.json({

@@ -18,8 +18,8 @@ export async function initSupabaseTables(): Promise<boolean> {
   if (!client) return false;
   try {
     // Create tables if they don't exist
-    await client.rpc('create_health_tables').catch(() => {});
-    return true;
+    const { error } = await client.rpc('create_health_tables');
+    return !error;
   } catch {
     return false;
   }
@@ -148,10 +148,7 @@ export async function clearSupabaseData(): Promise<boolean> {
   if (!client) return false;
   try {
     // Disable RLS temporarily or use service role key
-    await client.rpc('truncate_health_tables').catch(() => {
-      // Fallback: delete rows in batches
-      return Promise.resolve();
-    });
+    await client.rpc('truncate_health_tables');
     return true;
   } catch {
     return false;

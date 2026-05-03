@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getSupabase, addMetricToSupabase, addWorkoutToSupabase, getMetricsFromSupabase, getWorkoutsFromSupabase, getStatsFromSupabase } from './supabase';
+import { addMetricToSupabase, addWorkoutToSupabase, getMetricsFromSupabase, getWorkoutsFromSupabase, getStatsFromSupabase } from './supabase';
 
 export type HealthMetric = {
   id: string;

@@ -2,6 +2,32 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import dataStatic from '@/lib/data.json';
 
+interface StaticMetric {
+  date: string;
+  metricType?: string;
+  metric_type?: string;
+  value: number;
+  unit: string;
+  source?: string;
+}
+
+interface StaticWorkout {
+  date: string;
+  workoutType?: string;
+  workout_type?: string;
+  duration: number;
+  distance?: number;
+  elevationGain?: number;
+  elevation_gain?: number;
+  activeEnergy?: number;
+  active_energy?: number;
+  avgHeartRate?: number;
+  avg_heart_rate?: number;
+  maxHeartRate?: number;
+  max_heart_rate?: number;
+  notes?: string;
+}
+
 export async function POST(request: Request) {
   const authHeader = request.headers.get('authorization') || '';
   const expected = process.env.WEBHOOK_TOKEN;
@@ -23,8 +49,9 @@ export async function POST(request: Request) {
   let workoutsInserted = 0;
 
   // Insert metrics
-  if (Array.isArray(dataStatic.metrics)) {
-    for (const m of dataStatic.metrics) {
+  const metrics = dataStatic.metrics as StaticMetric[];
+  if (Array.isArray(metrics)) {
+    for (const m of metrics) {
       const { error } = await supabase.from('metrics').insert({
         date: m.date,
         metric_type: m.metricType ?? m.metric_type,
@@ -37,8 +64,9 @@ export async function POST(request: Request) {
   }
 
   // Insert workouts
-  if (Array.isArray(dataStatic.workouts)) {
-    for (const w of dataStatic.workouts) {
+  const workouts = dataStatic.workouts as StaticWorkout[];
+  if (Array.isArray(workouts)) {
+    for (const w of workouts) {
       const { error } = await supabase.from('workouts').insert({
         date: w.date,
         workout_type: w.workoutType ?? w.workout_type,
