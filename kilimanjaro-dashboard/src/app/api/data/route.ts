@@ -8,7 +8,7 @@ export async function GET(request: Request) {
 
   const metrics = await dataStore.getMetrics(type, days);
   const workouts = await dataStore.getWorkouts(days);
-  const stats = await dataStore.getStats(30);
+  const stats = await dataStore.getStats(days);
 
   return NextResponse.json({
     metrics,

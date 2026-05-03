@@ -90,14 +90,16 @@ class DataStore {
   }
 
   async getMetrics(type?: string, days = 90): Promise<HealthMetric[]> {
-    // If Supabase is available, use it
     if (this.useSupabase) {
       const remote = await getMetricsFromSupabase(type, days);
       if (remote.length > 0) return remote;
     }
-    // Fallback to in-memory
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
+    if (days === 1) {
+      cutoff.setHours(0, 0, 0, 0); // Start of today
+    } else {
+      cutoff.setDate(cutoff.getDate() - days);
+    }
     let filtered = this.metrics.filter(m => new Date(m.date) >= cutoff);
     if (type) {
       filtered = filtered.filter(m => m.metricType === type);
@@ -111,7 +113,11 @@ class DataStore {
       if (remote.length > 0) return remote;
     }
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - days);
+    if (days === 1) {
+      cutoff.setHours(0, 0, 0, 0); // Start of today
+    } else {
+      cutoff.setDate(cutoff.getDate() - days);
+    }
     return this.workouts
       .filter(w => new Date(w.date) >= cutoff)
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());

@@ -13,6 +13,8 @@ import {
   Download,
   Trash2,
   RefreshCw,
+  Moon,
+  Dumbbell,
 } from 'lucide-react';
 import DashboardCharts from '@/components/DashboardCharts';
 
@@ -44,6 +46,7 @@ interface DataResponse {
   summary: {
     metricCount: number;
     workoutCount: number;
+    dateRange: number;
   };
 }
 
@@ -96,7 +99,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 30000); // Refresh every 30s
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, [days]);
 
@@ -132,6 +135,23 @@ export default function DashboardPage() {
   const hasWorkouts = (data?.workouts.length || 0) > 0;
   const lastWorkout = hasWorkouts ? data!.workouts[data!.workouts.length - 1] : null;
 
+  // Additional metrics
+  const sleepMetrics = data?.metrics.filter(m => m.metricType === 'sleep') || [];
+  const avgSleep = sleepMetrics.length
+    ? sleepMetrics.reduce((a, b) => a + b.value, 0) / sleepMetrics.length / 60
+    : 0;
+
+  const exerciseMinutes = (data?.workouts || []).reduce((sum, w) => sum + w.duration, 0);
+  const exerciseHours = Math.round((exerciseMinutes / 60) * 10) / 10;
+
+  const restingHRs = data?.metrics.filter(m => m.metricType === 'restingHeartRate') || [];
+  const avgRestingHR = restingHRs.length
+    ? Math.round(restingHRs.reduce((a, b) => a + b.value, 0) / restingHRs.length)
+    : 0;
+
+  const activeEnergy = data?.metrics.filter(m => m.metricType === 'activeEnergy') || [];
+  const totalEnergy = Math.round(activeEnergy.reduce((a, b) => a + b.value, 0));
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -146,6 +166,7 @@ export default function DashboardPage() {
             onChange={(e) => setDays(parseInt(e.target.value))}
             className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-500"
           >
+            <option value={1}>Today</option>
             <option value={7}>Last 7 days</option>
             <option value={30}>Last 30 days</option>
             <option value={90}>Last 90 days</option>
@@ -210,7 +231,7 @@ export default function DashboardPage() {
           icon={Activity}
           label="Workouts"
           value={stats?.totalWorkouts.toString() || '0'}
-          sub="last 30 days"
+          sub={`Last ${days} ${days === 1 ? 'day' : 'days'}`}
           color="bg-amber-500"
         />
         <StatCard
@@ -226,6 +247,34 @@ export default function DashboardPage() {
           value={`${(stats?.totalElevation || 0).toLocaleString()}m`}
           sub="total gain"
           color="bg-violet-500"
+        />
+        <StatCard
+          icon={Dumbbell}
+          label="Exercise"
+          value={`${exerciseHours}h`}
+          sub="total"
+          color="bg-orange-500"
+        />
+        <StatCard
+          icon={Moon}
+          label="Avg Sleep"
+          value={avgSleep > 0 ? `${avgSleep.toFixed(1)}h` : '—'}
+          sub="per night"
+          color="bg-indigo-500"
+        />
+        <StatCard
+          icon={Heart}
+          label="Resting HR"
+          value={avgRestingHR > 0 ? `${avgRestingHR} bpm` : '—'}
+          sub="average"
+          color="bg-rose-500"
+        />
+        <StatCard
+          icon={TrendingUp}
+          label="Active Energy"
+          value={totalEnergy > 0 ? `${totalEnergy.toLocaleString()} kJ` : '—'}
+          sub="total"
+          color="bg-teal-500"
         />
       </div>
 
@@ -261,12 +310,60 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Workouts Table */}
+      <RecentWorkouts workouts={data?.workouts || []} />
+
       {/* Charts */}
       {data && <DashboardCharts metrics={data.metrics} workouts={data.workouts} />}
 
       {/* Data Summary */}
       <div className="text-center text-xs text-slate-400">
-        {data?.summary.metricCount} metrics · {data?.summary.workoutCount} workouts synced
+        {data?.summary.metricCount} metrics · {data?.summary.workoutCount} workouts synced · Last {days} {days === 1 ? 'day' : 'days'}
+      </div>
+    </div>
+  );
+}
+
+interface RecentWorkoutsProps {
+  workouts: DataResponse['workouts'];
+}
+
+function RecentWorkouts({ workouts }: RecentWorkoutsProps) {
+  if (workouts.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
+      <div className="flex items-center gap-2">
+        <Activity className="w-5 h-5 text-amber-500" />
+        <h3 className="font-semibold text-slate-800">Workout Details</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-slate-400 text-xs uppercase tracking-wide border-b border-slate-100">
+              <th className="pb-2 pr-4">Date</th>
+              <th className="pb-2 pr-4">Type</th>
+              <th className="pb-2 pr-4">Duration</th>
+              <th className="pb-2 pr-4">Distance</th>
+              <th className="pb-2 pr-4">Elevation</th>
+              <th className="pb-2 pr-4">Calories</th>
+              <th className="pb-2">Avg HR</th>
+            </tr>
+          </thead>
+          <tbody className="text-slate-700">
+            {[...workouts].reverse().slice(0, 10).map((w) => (
+              <tr key={w.date + w.workoutType + w.duration} className="border-b border-slate-50 last:border-0">
+                <td className="py-2 pr-4 whitespace-nowrap">{format(parseISO(w.date), 'MMM d')}</td>
+                <td className="py-2 pr-4 font-medium">{w.workoutType}</td>
+                <td className="py-2 pr-4">{w.duration} min</td>
+                <td className="py-2 pr-4">{w.distance ? `${w.distance.toFixed(2)} km` : '—'}</td>
+                <td className="py-2 pr-4">{w.elevationGain ? `${Math.round(w.elevationGain)} m` : '—'}</td>
+                <td className="py-2 pr-4">{w.activeEnergy ? `${Math.round(w.activeEnergy)} kcal` : '—'}</td>
+                <td className="py-2">{w.avgHeartRate ? `${Math.round(w.avgHeartRate)} bpm` : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
